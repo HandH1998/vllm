@@ -12,10 +12,8 @@ class SQColumnParallelLinear(ColumnParallelLinear):
     def create_weights(self, dtype: torch.dtype) -> None:
         assert self.input_size % self.quant_config.weight_bits == 0
         self.register_buffer('weight', 
-                            torch.randint(-127, 
-                                          127, 
-                                          (self.output_size_per_partition,
-                                           self.input_size), 
+                            torch.empty(self.output_size_per_partition,
+                                           self.input_size, 
                                            dtype=torch.int8, 
                                            requires_grad=False))
 
@@ -39,10 +37,8 @@ class SQRowParallelLinear(RowParallelLinear):
         assert (self.input_size_per_partition %
                 self.quant_config.weight_bits == 0)
         self.register_buffer('weight', 
-                            torch.randint(-127, 
-                                          127, 
-                                          (self.output_size,
-                                           self.input_size_per_partition), 
+                            torch.empty(self.output_size,
+                                           self.input_size_per_partition, 
                                            dtype=torch.int8, 
                                            requires_grad=False))
 
