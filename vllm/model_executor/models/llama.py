@@ -32,7 +32,7 @@ from torch import nn
 from transformers import LlamaConfig
 
 from vllm.model_executor.input_metadata import InputMetadata
-from vllm.model_executor.layers.activation import SiluAndMul, DequantSiluAndMulQuant
+from vllm.model_executor.layers.activation import SiluAndMul, DequantSiluAndMul
 from vllm.model_executor.layers.layernorm import RMSNorm, I8RMSNorm, DequantAddResidualI8RMSNormQuant
 from vllm.model_executor.layers.attention import PagedAttentionWithRoPE, DequantPagedAttentionWithRoPEQuant
 from vllm.model_executor.layers.sampler import Sampler
@@ -72,16 +72,17 @@ class LlamaMLP(nn.Module):
                                                 bias=False,
                                                 gather_output=False,
                                                 perform_initialization=False,
-                                                quant_config=quant_config)
+                                                quant_config=quant_config)  
+        # down_proj fp16 gemm
         self.down_proj = ParallelLinear.row(intermediate_size,
                                             hidden_size,
                                             bias=False,
                                             input_is_parallel=True,
                                             perform_initialization=False,
-                                            quant_config=quant_config)        
+                                            quant_config=None)      
         # kernel fusion for int8 inference
         if self.use_int8:
-            self.act_fn = DequantSiluAndMulQuant()
+            self.act_fn = DequantSiluAndMul()
         else:
             self.act_fn = SiluAndMul()
 
@@ -214,7 +215,6 @@ class LlamaDecoderLayer(nn.Module):
             # kernel fusion, post_attention_layernorm are fused into DequantAddResidualI8RMSNormQuant
             self.dequant_add_residual_layernorm_quant = DequantAddResidualI8RMSNormQuant(config.hidden_size,
                                                     eps=config.rms_norm_eps)
-            self.dequant_add_residual = DequantAddResidual()
         else:
             self.input_layernorm = RMSNorm(config.hidden_size,
                                         eps=config.rms_norm_eps)
@@ -243,7 +243,7 @@ class LlamaDecoderLayer(nn.Module):
         if self.use_int8:
             residual, hidden_states = self.dequant_add_residual_layernorm_quant(residual, hidden_states)
             hidden_states = self.mlp(hidden_states)
-            hidden_states = self.dequant_add_residual(residual, hidden_states)
+            hidden_states = hidden_states + residual
         else:
             hidden_states = residual + hidden_states
             # Fully Connected
@@ -353,8 +353,6 @@ class LlamaForCausalLM(nn.Module):
                 "post_attention_layernorm.weight": "dequant_add_residual_layernorm_quant.weight",
                 "mlp.gate_proj.a": "mlp.act_fn.a",
                 "mlp.up_proj.a": "mlp.act_fn.a",
-                "mlp.down_proj.inscale": "mlp.act_fn.inscale",
-                "mlp.down_proj.a": "dequant_add_residual.a"
             }
 
     def load_weights(self,
