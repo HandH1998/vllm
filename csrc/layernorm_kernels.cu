@@ -78,8 +78,39 @@ __global__ void dequant_add_residual_rms_norm_quant_kernel(
 
   float local_var_sum = 0.0f;
   for (int i = tid; i < n; i += blockDim.x) {
-    float diff = ((((float)input[blockIdx.x * n + i]) * scale) +
-                  (float)residual[blockIdx.x * n + i]);
+    float diff = (((float)input[blockIdx.x * n + i]) * scale) +
+                  (float)residual[blockIdx.x * n + i];
+    residual[blockIdx.x * n + i] = (T)diff;
+    local_var_sum += diff * diff;
+  }
+  variance = blockReduceSum(local_var_sum);
+
+  if (threadIdx.x == 0) {
+    s_variance = rsqrtf(variance / (float)n + layernorm_eps);
+  }
+  __syncthreads();
+
+  for (int i = tid; i < n; i += blockDim.x) {
+    output[blockIdx.x * n + i] =
+        float_to_int8_rn((((float)(residual[blockIdx.x * n + i])) * s_variance) * (float)(gamma[i]));
+  }
+}
+
+template <typename T>
+__global__ void add_residual_rms_norm_quant_kernel(
+    const T *__restrict__ input, T *__restrict__ residual,
+    int8_t *__restrict__ output, const T *__restrict__ gamma,
+    const float layernorm_eps, int m, int n) {
+  // layernorm module in the T5 style No bias and no subtraction of mean.
+  const int tid = threadIdx.x;
+
+  __shared__ float s_variance;
+  float variance = 0.0f;
+
+  float local_var_sum = 0.0f;
+  for (int i = tid; i < n; i += blockDim.x) {
+    float diff = (float)input[blockIdx.x * n + i] +
+                  (float)residual[blockIdx.x * n + i];
     residual[blockIdx.x * n + i] = (T)diff;
     local_var_sum += diff * diff;
   }
@@ -130,6 +161,29 @@ void invoke_rms_norm_quant(torch::Tensor &out,   // [num_tokens, hidden_size]
         vllm::rms_norm_quant_kernel<scalar_t><<<grid, block, 0, stream>>>(
             input.data_ptr<scalar_t>(), gamma.data_ptr<scalar_t>(),
             out.data_ptr<int8_t>(), epsilon, m, n);
+      });
+}
+
+void invoke_add_residual_rms_norm_quant(
+    torch::Tensor &out,      // [num_tokens, hidden_size]
+    torch::Tensor &input,    // [num_tokens, hidden_size]
+    torch::Tensor &residual, // [num_tokens, hidden_size]
+    torch::Tensor &gamma,    // [hidden_size]
+    float epsilon) {
+  int m = input.size(0);
+  int n = input.size(1);
+  dim3 grid(m);
+  dim3 block(min(n, 1024));
+
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  VLLM_DISPATCH_FLOATING_TYPES(
+      residual.scalar_type(), "add_residual_rms_norm_quant_kernel",
+      [&] {
+        vllm::add_residual_rms_norm_quant_kernel<scalar_t>
+            <<<grid, block, 0, stream>>>(
+                input.data_ptr<scalar_t>(), residual.data_ptr<scalar_t>(),
+                out.data_ptr<int8_t>(), gamma.data_ptr<scalar_t>(), epsilon,
+                m, n);
       });
 }
 
