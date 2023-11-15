@@ -33,11 +33,11 @@ from transformers import LlamaConfig
 
 from vllm.model_executor.input_metadata import InputMetadata
 from vllm.model_executor.layers.activation import SiluAndMul, DequantSiluAndMul
-from vllm.model_executor.layers.layernorm import RMSNorm, I8RMSNorm, DequantAddResidualI8RMSNormQuant
-from vllm.model_executor.layers.attention import PagedAttentionWithRoPE, DequantPagedAttentionWithRoPEQuant
+from vllm.model_executor.layers.layernorm import RMSNorm, I8RMSNorm, DequantAddResidualI8RMSNormQuant, AddResidualI8RMSNormQuant
+from vllm.model_executor.layers.attention import PagedAttentionWithRoPE, DequantPagedAttentionWithRoPE
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.quantized_linear import ParallelLinear
-from vllm.model_executor.layers.fusion import DequantAddResidual
+# from vllm.model_executor.layers.fusion import DequantAddResidual
 from vllm.model_executor.parallel_utils.parallel_state import (
     get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.parallel_utils.tensor_parallel import (
@@ -137,12 +137,12 @@ class LlamaAttention(nn.Module):
             bias=False,
             input_is_parallel=True,
             perform_initialization=False,
-            quant_config=quant_config,
+            quant_config=None,
         )
 
         # kernel fusion for int8 inference
         if self.use_int8:
-            self.attn = DequantPagedAttentionWithRoPEQuant(self.num_heads,
+            self.attn = DequantPagedAttentionWithRoPE(self.num_heads,
                                             self.head_dim,
                                             self.scaling,
                                             base=self.rope_theta,
@@ -213,7 +213,9 @@ class LlamaDecoderLayer(nn.Module):
             self.input_layernorm = I8RMSNorm(config.hidden_size,
                                         eps=config.rms_norm_eps)
             # kernel fusion, post_attention_layernorm are fused into DequantAddResidualI8RMSNormQuant
-            self.dequant_add_residual_layernorm_quant = DequantAddResidualI8RMSNormQuant(config.hidden_size,
+            # self.dequant_add_residual_layernorm_quant = DequantAddResidualI8RMSNormQuant(config.hidden_size,
+            #                                         eps=config.rms_norm_eps)
+            self.add_residual_layernorm_quant = AddResidualI8RMSNormQuant(config.hidden_size,
                                                     eps=config.rms_norm_eps)
         else:
             self.input_layernorm = RMSNorm(config.hidden_size,
@@ -241,7 +243,7 @@ class LlamaDecoderLayer(nn.Module):
         )
 
         if self.use_int8:
-            residual, hidden_states = self.dequant_add_residual_layernorm_quant(residual, hidden_states)
+            residual, hidden_states = self.add_residual_layernorm_quant(residual, hidden_states)
             hidden_states = self.mlp(hidden_states)
             hidden_states = hidden_states + residual
         else:
@@ -348,9 +350,9 @@ class LlamaForCausalLM(nn.Module):
                 "self_attn.q_proj.a": "self_attn.attn.a",
                 "self_attn.k_proj.a": "self_attn.attn.a",
                 "self_attn.v_proj.a": "self_attn.attn.a",
-                "self_attn.o_proj.inscale": "self_attn.attn.inscale",
-                "self_attn.o_proj.a": "dequant_add_residual_layernorm_quant.a",
-                "post_attention_layernorm.weight": "dequant_add_residual_layernorm_quant.weight",
+                # "self_attn.o_proj.inscale": "self_attn.attn.inscale",
+                # "self_attn.o_proj.a": "dequant_add_residual_layernorm_quant.a",
+                "post_attention_layernorm.weight": "add_residual_layernorm_quant.weight",
                 "mlp.gate_proj.a": "mlp.act_fn.a",
                 "mlp.up_proj.a": "mlp.act_fn.a",
             }

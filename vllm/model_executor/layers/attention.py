@@ -293,7 +293,8 @@ class PagedAttentionWithRoPE(PagedAttention):
         quant_kv_cache: bool = False,
         kv_quant_params: torch.Tensor = None,
     ) -> None:
-        super().__init__(num_heads, head_size, scale, num_kv_heads, quant_kv_cache, kv_quant_params)
+        super().__init__(num_heads, head_size, scale, num_kv_heads,
+                         quant_kv_cache, kv_quant_params)
         self.is_neox_style = is_neox_style
 
         # Create the cos and sin cache.
@@ -362,59 +363,29 @@ class PagedAttentionWithRoPE(PagedAttention):
             cache_event,
         )
 
-
-class DequantPagedAttentionWithRoPEQuant(PagedAttention):
+class DequantPagedAttentionWithRoPE(PagedAttentionWithRoPE):
     """PagedAttention with rotary embedding."""
 
-    def __init__(
-        self,
-        num_heads: int,
-        head_size: int,
-        scale: float,
-        rotary_dim: int,
-        max_position: int = 8192,
-        base: int = 10000,
-        num_kv_heads: Optional[int] = None,
-        is_neox_style: bool = True,
-        quant_kv_cache: bool = False,
-        kv_quant_params: torch.Tensor = None,
-        dequant_scale: float = 1.0,
-        quant_scale: float = 1.0
-    ) -> None:
-        super().__init__(num_heads, head_size, scale, num_kv_heads, quant_kv_cache, kv_quant_params)
-        self.is_neox_style = is_neox_style
+    def __init__(self,
+                 *args,
+                 dequant_scale: float = 1.0,
+                 **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.register_buffer(
+            'a',
+            torch.tensor(dequant_scale,
+                         dtype=torch.float32,
+                         requires_grad=False))
 
-        # Create the cos and sin cache.
-        inv_freq = 1.0 / (base**(torch.arange(
-            0, rotary_dim, 2, dtype=torch.float, device="cuda") / rotary_dim))
-        t = torch.arange(max_position, dtype=torch.float, device="cuda")
-        freqs = torch.einsum("i,j -> ij", t, inv_freq)
-        cos = freqs.cos()
-        sin = freqs.sin()
-        cache = torch.cat((cos, sin), dim=-1)
-
-        # FIXME(woosuk): This assumes that we configure the default dtype when
-        # initializing the model.
-        # TODO(woosuk): Make it more robust.
-        torch_dtype = torch.get_default_dtype()
-        cache = cache.to(torch_dtype)
-        # Embedding size: [max_position, rotary_dim]
-        self.register_buffer("cos_sin_cache", cache, persistent=False)
-        self.register_buffer('a', torch.tensor(dequant_scale, dtype=torch.float32, requires_grad=False))
-        self.register_buffer('inscale', torch.tensor(quant_scale, dtype=torch.float32, requires_grad=False))
-    
     def _apply(self, fn):
         super()._apply(fn)
         self.a = self.a.cpu()
-        self.inscale = self.inscale.cpu()
         return self
 
     def to(self, *args, **kwargs):
         super().to(*args, **kwargs)
         self.a = self.a.to(*args, **kwargs)
         self.a = self.a.to(torch.float32)
-        self.inscale = self.inscale.to(*args, **kwargs)
-        self.inscale = self.inscale.to(torch.float32)
         return self
 
     def forward(
@@ -465,7 +436,7 @@ class DequantPagedAttentionWithRoPEQuant(PagedAttention):
             self.a.item(),
             self.is_neox_style,
         )
-        out = super().forward(
+        out = super(PagedAttentionWithRoPE, self).forward(
             query_dequant,
             key_dequant,
             value_dequant,
@@ -474,10 +445,44 @@ class DequantPagedAttentionWithRoPEQuant(PagedAttention):
             input_metadata,
             cache_event,
         )
+        return out
+
+
+class DequantPagedAttentionWithRoPEQuant(DequantPagedAttentionWithRoPE):
+    """PagedAttention with rotary embedding."""
+
+    def __init__(self,
+                 *args,
+                 quant_scale: float = 1.0,
+                 **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.register_buffer(
+            'inscale',
+            torch.tensor(quant_scale, dtype=torch.float32,
+                         requires_grad=False))
+
+    def _apply(self, fn):
+        super()._apply(fn)
+        self.inscale = self.inscale.cpu()
+        return self
+
+    def to(self, *args, **kwargs):
+        super().to(*args, **kwargs)
+        self.inscale = self.inscale.to(*args, **kwargs)
+        self.inscale = self.inscale.to(torch.float32)
+        return self
+
+    def forward(
+        self,
+        *args,
+        **kwargs
+    ) -> torch.Tensor:
+        """ PagedAttention forward pass with rotary embedding. """
+
+        out = super().forward(*args, **kwargs)
         quant_out = torch.empty_like(out, dtype=torch.int8)
         fused_kernels.invoke_quant(quant_out, out, self.inscale.item())
         return quant_out
-
 
 class PagedAttentionWithALiBi(PagedAttention):
     """PagedAttention with ALiBi attention bias."""
