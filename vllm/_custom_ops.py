@@ -281,6 +281,38 @@ def static_scaled_int8_quant(input: torch.Tensor,
     return q
 
 
+# qqq ops
+def qqq_gemm(a: torch.Tensor, b_q_weight: torch.Tensor, s1: torch.Tensor,
+             s2: torch.Tensor, s3: torch, workspace: torch.Tensor, size_m: int,
+             size_n: int, size_k: int) -> torch.Tensor:
+    return vllm_ops.qqq_gemm(a, b_q_weight, s1, s2, s3, workspace, size_m,
+                             size_n, size_k)
+
+
+def rms_norm_quant(out: torch.Tensor, input: torch.Tensor, tmp: torch.Tensor,
+                   weight: torch.Tensor, scale: torch.Tensor,
+                   epsilon: float) -> None:
+    vllm_ops.rms_norm_quant(out, input, tmp, weight, scale, epsilon)
+
+
+def add_residual_rms_norm_quant(out: torch.Tensor, input: torch.Tensor,
+                                residual: torch.Tensor, tmp: torch.Tensor,
+                                weight: torch.Tensor, scale: torch.Tensor,
+                                epsilon: float) -> None:
+    vllm_ops.add_residual_rms_norm_quant(out, input, residual, tmp, weight,
+                                         scale, epsilon)
+
+
+def silu_and_mul_quant(out: torch.Tensor, input: torch.Tensor,
+                       scale: torch.Tensor, tmp: torch.Tensor) -> None:
+    vllm_ops.silu_and_mul_quant(out, input, scale, tmp)
+
+
+# activation per-token quant
+def quant(out: torch.Tensor, input: torch.Tensor, scale: torch.Tensor) -> None:
+    vllm_ops.quant(out, input, scale)
+
+
 # moe
 def moe_align_block_size(topk_ids: torch.Tensor, num_experts: int,
                          block_size: int, sorted_token_ids: torch.Tensor,

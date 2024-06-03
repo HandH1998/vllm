@@ -27,12 +27,12 @@ import torch
 from torch import nn
 from transformers import LlamaConfig
 
-from vllm.attention import Attention, AttentionMetadata
+from vllm.attention import Attention, AttentionMetadata, AttentionQuant
 from vllm.config import CacheConfig, LoRAConfig
 from vllm.distributed import (get_tensor_model_parallel_rank,
                               get_tensor_model_parallel_world_size)
-from vllm.model_executor.layers.activation import SiluAndMul
-from vllm.model_executor.layers.layernorm import RMSNorm
+from vllm.model_executor.layers.activation import (SiluAndMul, SiluAndMulQuant)
+from vllm.model_executor.layers.layernorm import RMSNorm, RMSNormQuant
 from vllm.model_executor.layers.linear import (MergedColumnParallelLinear,
                                                QKVParallelLinear,
                                                RowParallelLinear)
@@ -61,6 +61,8 @@ class LlamaMLP(nn.Module):
         bias: bool = False,
     ) -> None:
         super().__init__()
+        self.enable_qqq = quant_config is not None and quant_config.get_name(
+        ) == "qqq"
         self.gate_up_proj = MergedColumnParallelLinear(
             input_size=hidden_size,
             output_sizes=[intermediate_size] * 2,
@@ -73,12 +75,18 @@ class LlamaMLP(nn.Module):
         if hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {hidden_act}. "
                              "Only silu is supported for now.")
-        self.act_fn = SiluAndMul()
+        if self.enable_qqq:
+            self.act_fn = SiluAndMulQuant()
+        else:
+            self.act_fn = SiluAndMul()
 
-    def forward(self, x):
-        gate_up, _ = self.gate_up_proj(x)
-        x = self.act_fn(gate_up)
-        x, _ = self.down_proj(x)
+    def forward(self, x, scale=None):
+        gate_up, _ = self.gate_up_proj(x, scale)
+        if self.enable_qqq:
+            x, scale = self.act_fn(gate_up)
+        else:
+            x = self.act_fn(gate_up)
+        x, _ = self.down_proj(x, scale)
         return x
 
 
@@ -118,6 +126,8 @@ class LlamaAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
+        self.enable_qqq = quant_config is not None and quant_config.get_name(
+        ) == "qqq"
 
         self.qkv_proj = QKVParallelLinear(
             hidden_size=hidden_size,
@@ -141,12 +151,20 @@ class LlamaAttention(nn.Module):
             base=rope_theta,
             rope_scaling=rope_scaling,
         )
-        self.attn = Attention(self.num_heads,
-                              self.head_dim,
-                              self.scaling,
-                              num_kv_heads=self.num_kv_heads,
-                              cache_config=cache_config,
-                              quant_config=quant_config)
+        if self.enable_qqq:
+            self.attn = AttentionQuant(self.num_heads,
+                                       self.head_dim,
+                                       self.scaling,
+                                       num_kv_heads=self.num_kv_heads,
+                                       cache_config=cache_config,
+                                       quant_config=quant_config)
+        else:
+            self.attn = Attention(self.num_heads,
+                                  self.head_dim,
+                                  self.scaling,
+                                  num_kv_heads=self.num_kv_heads,
+                                  cache_config=cache_config,
+                                  quant_config=quant_config)
 
     def forward(
         self,
@@ -154,12 +172,16 @@ class LlamaAttention(nn.Module):
         hidden_states: torch.Tensor,
         kv_cache: torch.Tensor,
         attn_metadata: AttentionMetadata,
+        scale: torch.Tensor = None,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
+        qkv, _ = self.qkv_proj(hidden_states, scale)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k)
-        attn_output = self.attn(q, k, v, kv_cache, attn_metadata)
-        output, _ = self.o_proj(attn_output)
+        if self.enable_qqq:
+            attn_output, scale = self.attn(q, k, v, kv_cache, attn_metadata)
+        else:
+            attn_output = self.attn(q, k, v, kv_cache, attn_metadata)
+        output, _ = self.o_proj(attn_output, scale)
         return output
 
 
@@ -173,6 +195,8 @@ class LlamaDecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
+        self.enable_qqq = quant_config is not None and quant_config.get_name(
+        ) == "qqq"
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
         if rope_scaling is not None and getattr(
@@ -204,10 +228,16 @@ class LlamaDecoderLayer(nn.Module):
             quant_config=quant_config,
             bias=getattr(config, "mlp_bias", False),
         )
-        self.input_layernorm = RMSNorm(config.hidden_size,
-                                       eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size,
+        if self.enable_qqq:
+            self.input_layernorm = RMSNormQuant(config.hidden_size,
                                                 eps=config.rms_norm_eps)
+            self.post_attention_layernorm = RMSNormQuant(
+                config.hidden_size, eps=config.rms_norm_eps)
+        else:
+            self.input_layernorm = RMSNorm(config.hidden_size,
+                                           eps=config.rms_norm_eps)
+            self.post_attention_layernorm = RMSNorm(config.hidden_size,
+                                                    eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -217,24 +247,43 @@ class LlamaDecoderLayer(nn.Module):
         attn_metadata: AttentionMetadata,
         residual: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Self Attention
-        if residual is None:
-            residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
-        else:
-            hidden_states, residual = self.input_layernorm(
+        if self.enable_qqq:
+            # Self Attention
+            if residual is None:
+                residual = hidden_states
+                hidden_states, scale = self.input_layernorm(hidden_states)
+            else:
+                hidden_states, residual, scale = self.input_layernorm(
+                    hidden_states, residual)
+            hidden_states = self.self_attn(
+                positions=positions,
+                hidden_states=hidden_states,
+                kv_cache=kv_cache,
+                attn_metadata=attn_metadata,
+                scale=scale,
+            )
+            # Fully Connected
+            hidden_states, residual, scale = self.post_attention_layernorm(
                 hidden_states, residual)
-        hidden_states = self.self_attn(
-            positions=positions,
-            hidden_states=hidden_states,
-            kv_cache=kv_cache,
-            attn_metadata=attn_metadata,
-        )
-
-        # Fully Connected
-        hidden_states, residual = self.post_attention_layernorm(
-            hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
+            hidden_states = self.mlp(hidden_states, scale)
+        else:
+            # Self Attention
+            if residual is None:
+                residual = hidden_states
+                hidden_states = self.input_layernorm(hidden_states)
+            else:
+                hidden_states, residual = self.input_layernorm(
+                    hidden_states, residual)
+            hidden_states = self.self_attn(
+                positions=positions,
+                hidden_states=hidden_states,
+                kv_cache=kv_cache,
+                attn_metadata=attn_metadata,
+            )
+            # Fully Connected
+            hidden_states, residual = self.post_attention_layernorm(
+                hidden_states, residual)
+            hidden_states = self.mlp(hidden_states)
         return hidden_states, residual
 
 

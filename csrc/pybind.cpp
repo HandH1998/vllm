@@ -54,6 +54,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   ops.def("cutlass_scaled_mm_dq", &cutlass_scaled_mm_dq,
           "CUTLASS w8a8 GEMM, supporting symmetric per-tensor or "
           "per-row/column quantization.");
+  // QQQ ops
+  ops.def("qqq_gemm", &qqq_gemm, "Quantized GEMM for QQQ");
+  ops.def("silu_and_mul_quant", &silu_and_mul_quant,
+          "Apply silu act and per-token quant output.");
+  ops.def("rms_norm_quant", &rms_norm_quant,
+          "Apply RMS norm and quant output.");
+  ops.def("add_residual_rms_norm_quant", &add_residual_rms_norm_quant,
+          "Add input and residual, and quant output.");
+  ops.def("quant", &quant, "Per-token quant.");
 #endif
 
   ops.def("gptq_gemm", &gptq_gemm, "Quantized GEMM for GPTQ");

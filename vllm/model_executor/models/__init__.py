@@ -83,6 +83,13 @@ _ROCM_PARTIALLY_SUPPORTED_MODELS = {
     "Sliding window attention is not yet supported in ROCm's flash attention",
 }
 
+# Models supported by QQQ
+_SUPPORTED_QQQ_MODELS = {
+    "LlamaForCausalLM": ("llama", "LlamaForCausalLM"),
+    # For decapoda-research/llama-*
+    "LLaMAForCausalLM": ("llama", "LlamaForCausalLM"),
+}
+
 
 class ModelRegistry:
 
@@ -110,6 +117,10 @@ class ModelRegistry:
     @staticmethod
     def get_supported_archs() -> List[str]:
         return list(_MODELS.keys())
+
+    @staticmethod
+    def get_supported_qqq_archs() -> List[str]:
+        return list(_SUPPORTED_QQQ_MODELS.keys())
 
     @staticmethod
     def register_model(model_arch: str, model_cls: Type[nn.Module]):

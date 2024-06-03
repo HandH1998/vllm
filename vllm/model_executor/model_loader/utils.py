@@ -39,3 +39,14 @@ def get_model_architecture(
 
 def get_architecture_class_name(model_config: ModelConfig) -> str:
     return get_model_architecture(model_config)[1]
+
+
+def verify_support_qqq(model_config: ModelConfig) -> bool:
+    architectures = getattr(model_config.hf_config, "architectures", [])
+    supported_archs = ModelRegistry.get_supported_qqq_archs()
+    if any(arch in supported_archs for arch in architectures):
+        return True
+    raise ValueError(
+        f"Model architectures {architectures} are not supported "
+        f"by qqq for now. "
+        f"Supported architectures: {ModelRegistry.get_supported_archs()}")

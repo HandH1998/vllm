@@ -69,3 +69,29 @@ class RMSNorm(nn.Module):
         s = f"hidden_size={self.weight.data.size(0)}"
         s += f", eps={self.variance_epsilon}"
         return s
+
+
+class RMSNormQuant(RMSNorm):
+    """Root mean square normalization in SmoothQuant input_layernorm.
+    It applies RMS normalization on x then quantizes outputs into int8.
+    """
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        residual: Optional[torch.Tensor] = None,
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[
+            torch.Tensor, torch.Tensor, torch.Tensor]]:
+        out = torch.empty_like(x, dtype=torch.int8)
+        scale = torch.empty(out.numel() // out.shape[-1],
+                            dtype=torch.float32,
+                            device=out.device)
+        tmp = torch.empty_like(x, dtype=torch.float32)
+        if residual is not None:
+            ops.add_residual_rms_norm_quant(out, x, residual, tmp,
+                                            self.weight.data, scale,
+                                            self.variance_epsilon)
+            return out, residual, scale
+        ops.rms_norm_quant(out, x, tmp, self.weight.data, scale,
+                           self.variance_epsilon)
+        return out, scale

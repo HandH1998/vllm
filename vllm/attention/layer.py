@@ -1,5 +1,5 @@
 """Attention layer."""
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -9,6 +9,7 @@ from vllm.attention.selector import get_attn_backend
 from vllm.config import CacheConfig
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
+from vllm import _custom_ops as ops
 
 
 class Attention(nn.Module):
@@ -96,3 +97,40 @@ class Attention(nn.Module):
         s += f", scale={self.impl.scale}"  # type: ignore
         s += f", backend={self.impl.__class__.__name__}"
         return s
+
+
+class AttentionQuant(Attention):
+    """Attention layer for QQQ.
+
+    This class takes query, key, and value tensors as input. The input tensors
+    can either contain prompt tokens or generation tokens. Finally, quantize
+    the output to int8.
+    The class does the following:
+
+    1. Store the input key and value tensors in the KV cache.
+    2. Perform (multi-head/multi-query/grouped-query) attention.
+    3. Quantize the output tensor to int8.
+    4. Return the output tensor.
+    """
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        kv_cache: Optional[torch.Tensor],
+        attn_metadata: AttentionMetadata,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        out = super().forward(
+            query,
+            key,
+            value,
+            kv_cache,
+            attn_metadata,
+        )
+        quant_out = torch.empty_like(out, dtype=torch.int8)
+        scale = torch.empty(out.numel() // out.shape[-1],
+                            dtype=torch.float32,
+                            device=out.device)
+        ops.quant(quant_out, out, scale)
+        return quant_out, scale

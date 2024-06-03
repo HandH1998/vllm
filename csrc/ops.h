@@ -92,6 +92,46 @@ int cutlass_scaled_mm_dq(torch::Tensor& out, torch::Tensor const& a,
                          torch::Tensor const& b, torch::Tensor const& a_scales,
                          torch::Tensor const& b_scales);
 
+// These are kernels used by qqq
+torch::Tensor qqq_gemm(
+    torch::Tensor& a,
+    torch::Tensor& b_q_weight,
+    torch::Tensor& s1,
+    torch::Tensor& s2,
+    torch::Tensor& s3,
+    torch::Tensor& workspace,
+    int64_t size_m,
+    int64_t size_n,
+    int64_t size_k);
+
+void rms_norm_quant(
+  torch::Tensor& out,
+  torch::Tensor& input,
+  torch::Tensor& tmp,
+  torch::Tensor& weight,
+  torch::Tensor& scale,
+  float epsilon);
+
+void add_residual_rms_norm_quant(
+  torch::Tensor& out,
+  torch::Tensor& input,
+  torch::Tensor& residual,
+  torch::Tensor& tmp,
+  torch::Tensor& weight,
+  torch::Tensor& scale,
+  float epsilon);
+
+void silu_and_mul_quant(
+  torch::Tensor& out,
+  torch::Tensor& input,
+  torch::Tensor& scale,
+  torch::Tensor& tmp);
+
+void quant(
+  torch::Tensor& out,
+  torch::Tensor& input,
+  torch::Tensor& scale);
+
 #endif
 
 void static_scaled_int8_quant(torch::Tensor& out, torch::Tensor& input,

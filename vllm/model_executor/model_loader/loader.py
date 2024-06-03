@@ -26,7 +26,8 @@ from vllm.model_executor.model_loader.tensorizer import (
     TensorizerConfig, is_vllm_tensorized, load_with_tensorizer,
     tensorizer_weights_iterator)
 from vllm.model_executor.model_loader.utils import (get_model_architecture,
-                                                    set_default_torch_dtype)
+                                                    set_default_torch_dtype,
+                                                    verify_support_qqq)
 from vllm.model_executor.model_loader.weight_utils import (
     download_safetensors_index_file_from_hf, download_weights_from_hf,
     filter_duplicate_safetensors_files, filter_files_not_needed_for_inference,
@@ -43,6 +44,8 @@ def _get_quantization_config(
         load_config: LoadConfig) -> Optional[QuantizationConfig]:
     """Get the quantization config."""
     if model_config.quantization is not None:
+        if model_config.quantization == "qqq":
+            verify_support_qqq(model_config)
         quant_config = get_quant_config(model_config, load_config)
         capability = torch.cuda.get_device_capability()
         capability = capability[0] * 10 + capability[1]

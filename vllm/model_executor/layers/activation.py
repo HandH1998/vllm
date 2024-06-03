@@ -1,6 +1,6 @@
 """Custom activation functions."""
 import math
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -34,6 +34,27 @@ class SiluAndMul(nn.Module):
         out = torch.empty(output_shape, dtype=x.dtype, device=x.device)
         ops.silu_and_mul(out, x)
         return out
+
+
+class SiluAndMulQuant(nn.Module):
+    """An activation function for SwiGLU in QQQ.
+
+    The function computes x -> silu(x[:d]) * x[d:] 
+    where d = x.shape[-1] // 2 in kernel function,
+    finally quantizes output into int8.
+    """
+
+    def forward(
+        self,
+        x: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        num_tokens = x.numel() // x.shape[-1]
+        d = x.shape[-1] // 2
+        out = torch.empty(*x.shape[:-1], d, dtype=torch.int8, device=x.device)
+        scale = torch.empty(num_tokens, dtype=torch.float32, device=x.device)
+        tmp = torch.empty_like(out, dtype=torch.float32)
+        ops.silu_and_mul_quant(out, x, scale, tmp)
+        return out, scale
 
 
 class GeluAndMul(nn.Module):
